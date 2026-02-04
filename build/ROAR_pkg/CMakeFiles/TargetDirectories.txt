@@ -1,9 +1,0 @@
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/uninstall.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/ROAR_pkg_uninstall.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/test.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/edit_cache.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/rebuild_cache.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/list_install_components.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/install.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/install/local.dir
-/home/ahmed/New_ROAR_Arm/build/ROAR_pkg/CMakeFiles/install/strip.dir
