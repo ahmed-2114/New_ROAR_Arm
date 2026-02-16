@@ -1,40 +1,46 @@
-from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, RegisterEventHandler
-from launch.event_handlers import OnProcessExit
-from launch.substitutions import PathJoinSubstitution, LaunchConfiguration
-from launch_ros.actions import Node
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from ament_index_python.packages import get_package_share_directory
 import os
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription, RegisterEventHandler, ExecuteProcess
+from launch.event_handlers import OnProcessExit
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
-    pkg_desc = get_package_share_directory('ROAR_pkg')
+    # --- 1. GET DYNAMIC PACKAGE PATHS ---
+    pkg_roar_pkg = get_package_share_directory('ROAR_pkg')
+    pkg_roar_moveit = get_package_share_directory('ROAR_MoveIT')
     pkg_ros_gz = get_package_share_directory('ros_gz_sim')
 
-    # 1. Setup Paths
-    urdf_path = os.path.join(pkg_desc, 'urdf', 'New_URDF.urdf') 
+    # --- 2. DEFINE PATHS ---
+    # The raw URDF file
+    urdf_file_path = os.path.join(pkg_roar_pkg, 'urdf', 'New_URDF.urdf')
     
-    # Define absolute path to the YAML file
-    # We use os.path.join so we get a string we can use in .replace()
-    controller_yaml_absolute = os.path.join(pkg_desc, "config", "joint_names_New_URDF.yaml")
+    # The real path to the meshes (for replacement)
+    meshes_path = os.path.join(pkg_roar_pkg, 'meshes')
     
-    mesh_absolute_path = os.path.join(pkg_desc, 'meshes')
+    # The real path to the controllers (for replacement)
+    controllers_yaml_path = os.path.join(pkg_roar_moveit, 'config', 'ros2_controllers.yaml')
 
-    # 2. Process URDF
-    # We read the file and replace the 'package://' paths with absolute paths
-    # so Gazebo/ros2_control can find them without error.
-    with open(urdf_path, 'r') as urdf_file:
-        robot_desc_raw = urdf_file.read()
-
-    robot_description = robot_desc_raw.replace(
-        "package://ROAR_pkg/meshes",
-        mesh_absolute_path
-    ).replace(
-        "package://ROAR_pkg/config/joint_names_New_URDF.yaml",
-        controller_yaml_absolute
+    # --- 3. PROCESS URDF (THE "FIND AND REPLACE" TRICK) ---
+    # We read the URDF and replace the "package://" placeholders with real paths
+    with open(urdf_file_path, 'r') as file:
+        robot_desc_content = file.read()
+    
+    # Replace mesh paths
+    robot_desc_content = robot_desc_content.replace(
+        'package://ROAR_pkg/meshes', 
+        'file://' + meshes_path
+    )
+    
+    # Replace controller config path
+    robot_desc_content = robot_desc_content.replace(
+        'package://ROAR_MoveIT/config/ros2_controllers.yaml', 
+        controllers_yaml_path
     )
 
-    # 3. Start Gazebo
+    # --- 4. GAZEBO SIMULATION ---
+    # Launch Gazebo with an empty world
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz, 'launch', 'gz_sim.launch.py')
@@ -42,66 +48,68 @@ def generate_launch_description():
         launch_arguments={'gz_args': '-r empty.sdf'}.items(),
     )
 
-    # 4. Robot State Publisher
-    robot_state_publisher_node = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        parameters=[{'robot_description': robot_description}],
-        output='screen'
-    )
-    
-    # 5. Spawn Robot
+    # --- 5. SPAWN THE ROBOT ---
     spawn_entity = Node(
         package='ros_gz_sim',
         executable='create',
-        arguments=['-name', 'robot_New_URDF', 
-                   '-topic', '/robot_description'],
+        arguments=['-name', 'New_ROAR_Arm',
+                   '-string', robot_desc_content, # Pass the processed string directly!
+                   '-x', '0', '-y', '0', '-z', '0.1'], # Lift it slightly so it doesn't clip floor
         output='screen',
     )
 
-    # 6. Bridge
+    # --- 6. ROBOT STATE PUBLISHER ---
+    node_robot_state_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        output='screen',
+        parameters=[{'robot_description': robot_desc_content, 'use_sim_time': True}]
+    )
+
+    # --- 7. BRIDGE (ROS <-> GAZEBO) ---
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
         arguments=[
             '/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock',
-            '/world/empty/model/robot_New_URDF/joint_state@sensor_msgs/msg/JointState[gz.msgs.Model',
-        ],
-        remappings=[
-            ('/world/empty/model/robot_New_URDF/joint_state', 'joint_states'),
+            '/joint_states@sensor_msgs/msg/JointState[gz.msgs.Model',
         ],
         output='screen'
     )
 
-    # 7. Spawners
-    load_joint_state_broadcaster = Node(
+    # --- 8. CONTROLLERS (WITH DELAY!) ---
+    # We must wait for the robot to spawn before loading controllers, or they will crash.
+    
+    joint_state_broadcaster = Node(
         package="controller_manager",
         executable="spawner",
         arguments=["joint_state_broadcaster"],
-        output="screen"
     )
 
-    load_arm_group_controller = Node(
+    arm_controller = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["arm_group_controller"],
-        output="screen"
+        arguments=["arm_controller_controller"],
     )
 
-    load_hand_group_controller = Node(
+    ee_controller = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["hand_group_controller"],
-        output="screen"
+        arguments=["EE_controller_controller"],
     )
-    
+
+    # This creates the delay logic
+    delay_controllers = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=spawn_entity,
+            on_exit=[joint_state_broadcaster, arm_controller, ee_controller],
+        )
+    )
 
     return LaunchDescription([
         gazebo,
-        robot_state_publisher_node,
+        node_robot_state_publisher,
         spawn_entity,
         bridge,
-        load_joint_state_broadcaster,
-        load_arm_group_controller,
-        load_hand_group_controller,
+        delay_controllers
     ])

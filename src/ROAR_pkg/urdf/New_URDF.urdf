@@ -55,7 +55,7 @@
     <parent link="base_link" />
     <child link="Link_1" />
     <axis xyz="0 0 -1" />
-    <limit lower="-1.5708" upper="1.5708" effort="10.0" velocity="2.0" />
+    <limit lower="-1.5808" upper="1.5808" effort="10.0" velocity="2.0" />
   </joint>
 
   <!-- JOINT 2 -->
@@ -82,7 +82,7 @@
     <parent link="Link_1" />
     <child link="Link_2" />
     <axis xyz="0 0 -1" />
-    <limit lower="-2.4435" upper="0.0" effort="10.0" velocity="2.0" />
+    <limit lower="-2.4535" upper="0.01" effort="10.0" velocity="2.0" />
   </joint>
 
   <!-- JOINT 3 -->
@@ -109,7 +109,7 @@
     <parent link="Link_2" />
     <child link="Link_3" />
     <axis xyz="0 0 -1" />
-    <limit lower="-1.5708" upper="1.5708" effort="10.0" velocity="2.0" />
+    <limit lower="-1.5808" upper="1.5808" effort="10.0" velocity="2.0" />
   </joint>
 
   <!-- JOINT 4 -->
@@ -136,7 +136,7 @@
     <parent link="Link_3" />
     <child link="Link_4" />
     <axis xyz="0 0 -1" />
-    <limit lower="-1.5708" upper="1.5708" effort="10.0" velocity="2.0" />
+    <limit lower="-1.5808" upper="1.5808" effort="10.0" velocity="2.0" />
   </joint>
 
   <!-- JOINT 5 -->
@@ -163,7 +163,7 @@
     <parent link="Link_4" />
     <child link="Link_5" />
     <axis xyz="0 0 -1" />
-    <limit lower="-1.5708" upper="1.5708" effort="10.0" velocity="2.0" />
+    <limit lower="-1.5808" upper="1.5808" effort="10.0" velocity="2.0" />
   </joint>
 
   <!-- JOINT EE -->
@@ -190,12 +190,12 @@
     <parent link="Link_5" />
     <child link="Link_EE" />
     <axis xyz="0 0 -1" />
-    <limit lower="-0.1173" upper="0.0" effort="10.0" velocity="1.0" />
+    <limit lower="-0.1273" upper="0.01" effort="10.0" velocity="1.0" />
   </joint>
 
 <ros2_control name="RobotSystem" type="system">
     <hardware>
-      <plugin>mock_components/GenericSystem</plugin>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
     </hardware>
 
     <joint name="Joint_1">
@@ -229,11 +229,11 @@
       <state_interface name="velocity"/>
     </joint>
   </ros2_control>
-  <!-->
+
   <gazebo>
-    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
-      <parameters>/home/ahmed/Robotics-Project-main/install/my_robot_arm_pkg/share/my_robot_arm_pkg/config/joint_controllers.yaml</parameters>
-    </plugin>
-  </gazebo>
-  <-->
+  <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+    <parameters>package://ROAR_MoveIT/config/ros2_controllers.yaml</parameters>
+  </plugin>
+</gazebo>
+
 </robot>
