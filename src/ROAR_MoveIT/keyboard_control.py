@@ -125,8 +125,69 @@ class XYZMover(Node):
                 break
 
         if ik_resp is None:
-            self.get_logger().warn(f'IK solver failed after orientation sweep, last_error={last_err}')
-            return None
+            self.get_logger().warn(f'IK solver failed after orientation sweep, trying small position perturbations')
+            # Try small position perturbations (±1-2 cm) to help solver
+            deltas = [0.0, 0.01, -0.01, 0.02, -0.02]
+            for dx in deltas:
+                for dy in deltas:
+                    for dz in deltas:
+                        if dx == 0.0 and dy == 0.0 and dz == 0.0:
+                            continue
+                        tx = target_xyz.x + dx
+                        ty = target_xyz.y + dy
+                        tz = target_xyz.z + dz
+                        self.get_logger().info(f'Trying perturbed target: {tx:.3f},{ty:.3f},{tz:.3f}')
+                        # orientation sweep for this perturbed position
+                        for yaw in yaw_samples:
+                            for pitch in pitch_samples:
+                                cy = math.cos(yaw * 0.5)
+                                sy = math.sin(yaw * 0.5)
+                                cp = math.cos(pitch * 0.5)
+                                sp = math.sin(pitch * 0.5)
+                                cr = math.cos(0.0 * 0.5)
+                                sr = math.sin(0.0 * 0.5)
+                                q_w = cr * cp * cy + sr * sp * sy
+                                q_x = sr * cp * cy - cr * sp * sy
+                                q_y = cr * sp * cy + sr * cp * sy
+                                q_z = cr * cp * sy - sr * sp * cy
+
+                                ik_req = PositionIKRequest()
+                                ik_req.group_name = GROUP_NAME
+                                ik_req.ik_link_name = TARGET_LINK
+                                ik_req.pose_stamped.header.frame_id = BASE_FRAME
+                                ik_req.pose_stamped.pose.position.x = tx
+                                ik_req.pose_stamped.pose.position.y = ty
+                                ik_req.pose_stamped.pose.position.z = tz
+                                ik_req.pose_stamped.pose.orientation.x = q_x
+                                ik_req.pose_stamped.pose.orientation.y = q_y
+                                ik_req.pose_stamped.pose.orientation.z = q_z
+                                ik_req.pose_stamped.pose.orientation.w = q_w
+                                ik_req.timeout.sec = 3
+
+                                req = GetPositionIK.Request()
+                                req.ik_request = ik_req
+
+                                fut = self.ik_client.call_async(req)
+                                rclpy.spin_until_future_complete(self, fut)
+                                if not fut.done() or fut.result() is None:
+                                    continue
+                                resp = fut.result()
+                                self.get_logger().info(f'IK response error_code={resp.error_code.val}')
+                                if resp.error_code.val == 1:
+                                    ik_resp = resp
+                                    break
+                            if ik_resp:
+                                break
+                        if ik_resp:
+                            break
+                    if ik_resp:
+                        break
+                if ik_resp:
+                    break
+
+            if ik_resp is None:
+                self.get_logger().warn(f'IK solver failed after perturbation attempts, last_error={last_err}')
+                return None
 
         # Extract joint positions for the arm joints
         js = ik_resp.solution.joint_state
