@@ -166,11 +166,32 @@ def main():
             else: continue
 
             node.get_logger().info(f"XYZ Request: {target.x:.2f}, {target.y:.2f}, {target.z:.2f}")
-            future = node.send_goal(target)
-            rclpy.spin_until_future_complete(node, future)
+            res = node.send_goal(target)
+            # send_goal may return None (failure), a goal handle, or a future-like object.
+            if res is None:
+                # send_goal already logged the error
+                continue
+
+            # If send_goal returned a goal handle (we already waited inside), just report
+            if hasattr(res, 'accepted'):
+                try:
+                    if res.accepted:
+                        node.get_logger().info('Trajectory goal accepted (sent to controller)')
+                    else:
+                        node.get_logger().warn('Trajectory goal was rejected by controller')
+                except Exception:
+                    node.get_logger().info('Trajectory goal sent')
+                continue
+
+            # Otherwise assume it's a future: wait for it and process like before
+            try:
+                rclpy.spin_until_future_complete(node, res)
+            except Exception as e:
+                node.get_logger().error(f'Error waiting for future: {e}')
+                continue
 
             try:
-                goal_handle = future.result()
+                goal_handle = res.result()
             except Exception as e:
                 node.get_logger().error(f"Failed to send goal: {e}")
                 continue
