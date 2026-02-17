@@ -45,26 +45,17 @@ class XYZMover(Node):
     def get_link_pos(self):
         try:
             # Current coordinates of Link_5 relative to base_link
-        # Try several possible frame name variants (unprefixed and common Gazebo model prefixes)
-        try_frames = [
-            TARGET_LINK,
-            f"New_ROAR_Arm/{TARGET_LINK}",
-            f"New_ROAR_Arm::{TARGET_LINK}"
-        ]
-        for frame in try_frames:
-            try:
-                trans = self.tf_buffer.lookup_transform(BASE_FRAME, frame, rclpy.time.Time())
-                self.get_logger().info(f"Using TF frame: {frame}")
-                return trans.transform.translation
-            except Exception:
-                continue
-        return None
+            trans = self.tf_buffer.lookup_transform(BASE_FRAME, TARGET_LINK, rclpy.time.Time())
+            return trans.transform.translation
+        except:
+            return None
 
     def send_goal(self, target_xyz):
         goal_msg = MoveGroup.Goal()
         goal_msg.request.group_name = GROUP_NAME
+        # Allow more planning time and attempts for difficult IK queries
         goal_msg.request.num_planning_attempts = 10
-        goal_msg.request.allowed_planning_time = 2.0
+        goal_msg.request.allowed_planning_time = 5.0
         
         # Define Workspace Bounds
         goal_msg.request.workspace_parameters.header.frame_id = BASE_FRAME
@@ -80,7 +71,8 @@ class XYZMover(Node):
         vol = BoundingVolume()
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
-        box.dimensions = [0.02, 0.02, 0.02] # 2cm tolerance
+        # Use a slightly larger tolerance to help OMPL find reachable states (5cm)
+        box.dimensions = [0.05, 0.05, 0.05]
         vol.primitives = [box]
         
         pose = PoseStamped()
@@ -133,6 +125,25 @@ def main():
             node.get_logger().info(f"XYZ Request: {target.x:.2f}, {target.y:.2f}, {target.z:.2f}")
             future = node.send_goal(target)
             rclpy.spin_until_future_complete(node, future)
+
+            try:
+                goal_handle = future.result()
+            except Exception as e:
+                node.get_logger().error(f"Failed to send goal: {e}")
+                continue
+
+            if not goal_handle.accepted:
+                node.get_logger().warn("MoveIt rejected the goal")
+                continue
+
+            result_future = goal_handle.get_result_async()
+            rclpy.spin_until_future_complete(node, result_future)
+            try:
+                result = result_future.result()
+                node.get_logger().info(f"Move result: {result}")
+            except Exception as e:
+                node.get_logger().error(f"Error getting result: {e}")
+                continue
             
     finally:
         node.destroy_node()
