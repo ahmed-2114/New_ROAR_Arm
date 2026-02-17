@@ -8,6 +8,11 @@ from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import Constraints, PositionConstraint, BoundingVolume
 from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
+from moveit_msgs.srv import GetPositionIK
+from moveit_msgs.msg import PositionIKRequest
+from sensor_msgs.msg import JointState
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.action import FollowJointTrajectory
 import sys, select, termios, tty
 
 # --- SETTINGS ---
@@ -37,6 +42,10 @@ class XYZMover(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.action_client = ActionClient(self, MoveGroup, 'move_action')
+        # Trajectory action client for direct joint control
+        self.traj_client = ActionClient(self, FollowJointTrajectory, '/arm_controller_controller/follow_joint_trajectory')
+        # IK service client (MoveIt provides /compute_ik)
+        self.ik_client = self.create_client(GetPositionIK, 'compute_ik')
         
         self.get_logger().info("Connecting to MoveIt Brain...")
         self.action_client.wait_for_server()
@@ -51,42 +60,76 @@ class XYZMover(Node):
             return None
 
     def send_goal(self, target_xyz):
-        goal_msg = MoveGroup.Goal()
-        goal_msg.request.group_name = GROUP_NAME
-        # Allow more planning time and attempts for difficult IK queries
-        goal_msg.request.num_planning_attempts = 10
-        goal_msg.request.allowed_planning_time = 5.0
-        
-        # Define Workspace Bounds
-        goal_msg.request.workspace_parameters.header.frame_id = BASE_FRAME
-        goal_msg.request.workspace_parameters.min_corner.x, goal_msg.request.workspace_parameters.min_corner.y, goal_msg.request.workspace_parameters.min_corner.z = -2.0, -2.0, -2.0
-        goal_msg.request.workspace_parameters.max_corner.x, goal_msg.request.workspace_parameters.max_corner.y, goal_msg.request.workspace_parameters.max_corner.z = 2.0, 2.0, 2.0
+        # Robust approach: compute IK using MoveIt's /compute_ik service,
+        # then send a FollowJointTrajectory goal directly to the controller.
+        # 1) Wait for IK service
+        if not self.ik_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error('IK service /compute_ik not available')
+            return None
 
-        # Position Constraint ONLY (The magic fix)
-        c = Constraints()
-        pc = PositionConstraint()
-        pc.header.frame_id = BASE_FRAME
-        pc.link_name = TARGET_LINK
-        
-        vol = BoundingVolume()
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        # Use a slightly larger tolerance to help OMPL find reachable states (5cm)
-        box.dimensions = [0.05, 0.05, 0.05]
-        vol.primitives = [box]
-        
-        pose = PoseStamped()
-        pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = target_xyz.x, target_xyz.y, target_xyz.z
-        vol.primitive_poses = [pose.pose]
-        
-        pc.constraint_region = vol
-        pc.weight = 1.0
-        c.position_constraints.append(pc)
-        
-        # WE EXPLICITLY DO NOT ADD ORIENTATION CONSTRAINTS
-        
-        goal_msg.request.goal_constraints.append(c)
-        return self.action_client.send_goal_async(goal_msg)
+        ik_req = PositionIKRequest()
+        ik_req.group_name = GROUP_NAME
+        ik_req.ik_link_name = TARGET_LINK
+        ik_req.pose_stamped.header.frame_id = BASE_FRAME
+        ik_req.pose_stamped.pose.position.x = target_xyz.x
+        ik_req.pose_stamped.pose.position.y = target_xyz.y
+        ik_req.pose_stamped.pose.position.z = target_xyz.z
+        # default orientation (ignored for position-only IK if solver supports it)
+        ik_req.pose_stamped.pose.orientation.w = 1.0
+        ik_req.timeout.sec = 2
+
+        req = GetPositionIK.Request()
+        req.ik_request = ik_req
+
+        fut = self.ik_client.call_async(req)
+        rclpy.spin_until_future_complete(self, fut)
+        if not fut.done() or fut.result() is None:
+            self.get_logger().error('IK call failed')
+            return None
+        resp = fut.result()
+        if resp.error_code.val != 1:
+            self.get_logger().warn(f'IK solver failed with code: {resp.error_code.val}')
+            return None
+
+        # Extract joint positions for the arm joints
+        js = resp.solution.joint_state
+        name_to_pos = dict(zip(js.name, js.position))
+        joint_names = ['Joint_1', 'Joint_2', 'Joint_3', 'Joint_4', 'Joint_5']
+        positions = []
+        for j in joint_names:
+            if j in name_to_pos:
+                positions.append(name_to_pos[j])
+            else:
+                self.get_logger().error(f'IK result missing joint {j}')
+                return None
+
+        # 2) Send FollowJointTrajectory goal
+        if not self.traj_client.wait_for_server(timeout_sec=2.0):
+            self.get_logger().error('Trajectory action server not available')
+            return None
+
+        from control_msgs.action import FollowJointTrajectory
+        goal = FollowJointTrajectory.Goal()
+        traj = JointTrajectory()
+        traj.joint_names = joint_names
+        pt = JointTrajectoryPoint()
+        pt.positions = positions
+        pt.time_from_start.sec = 1
+        traj.points = [pt]
+        goal.trajectory = traj
+
+        send_fut = self.traj_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_fut)
+        if not send_fut.done():
+            self.get_logger().error('Failed to send trajectory goal')
+            return None
+        gh = send_fut.result()
+        if not gh.accepted:
+            self.get_logger().warn('Controller rejected trajectory goal')
+            return None
+        res_fut = gh.get_result_async()
+        rclpy.spin_until_future_complete(self, res_fut)
+        return gh
 
 def getKey(settings):
     tty.setraw(sys.stdin.fileno())
