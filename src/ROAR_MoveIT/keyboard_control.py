@@ -13,6 +13,7 @@ from moveit_msgs.msg import PositionIKRequest
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
+import math
 import sys, select, termios, tty
 
 # --- SETTINGS ---
@@ -66,33 +67,69 @@ class XYZMover(Node):
         if not self.ik_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().error('IK service /compute_ik not available')
             return None
+        # Try several wrist orientations to increase IK success chance
+        # We'll sweep yaw angles and small pitch offsets
+        yaw_samples = [0.0, math.pi/4, -math.pi/4, math.pi/2, -math.pi/2, math.pi]
+        pitch_samples = [0.0, math.pi/12, -math.pi/12]
+        roll = 0.0
+        ik_resp = None
+        last_err = None
+        for yaw in yaw_samples:
+            for pitch in pitch_samples:
+                # construct quaternion from roll,pitch,yaw
+                cy = math.cos(yaw * 0.5)
+                sy = math.sin(yaw * 0.5)
+                cp = math.cos(pitch * 0.5)
+                sp = math.sin(pitch * 0.5)
+                cr = math.cos(roll * 0.5)
+                sr = math.sin(roll * 0.5)
+                q_w = cr * cp * cy + sr * sp * sy
+                q_x = sr * cp * cy - cr * sp * sy
+                q_y = cr * sp * cy + sr * cp * sy
+                q_z = cr * cp * sy - sr * sp * cy
 
-        ik_req = PositionIKRequest()
-        ik_req.group_name = GROUP_NAME
-        ik_req.ik_link_name = TARGET_LINK
-        ik_req.pose_stamped.header.frame_id = BASE_FRAME
-        ik_req.pose_stamped.pose.position.x = target_xyz.x
-        ik_req.pose_stamped.pose.position.y = target_xyz.y
-        ik_req.pose_stamped.pose.position.z = target_xyz.z
-        # default orientation (ignored for position-only IK if solver supports it)
-        ik_req.pose_stamped.pose.orientation.w = 1.0
-        ik_req.timeout.sec = 2
+                ik_req = PositionIKRequest()
+                ik_req.group_name = GROUP_NAME
+                ik_req.ik_link_name = TARGET_LINK
+                ik_req.pose_stamped.header.frame_id = BASE_FRAME
+                ik_req.pose_stamped.pose.position.x = target_xyz.x
+                ik_req.pose_stamped.pose.position.y = target_xyz.y
+                ik_req.pose_stamped.pose.position.z = target_xyz.z
+                ik_req.pose_stamped.pose.orientation.x = q_x
+                ik_req.pose_stamped.pose.orientation.y = q_y
+                ik_req.pose_stamped.pose.orientation.z = q_z
+                ik_req.pose_stamped.pose.orientation.w = q_w
+                ik_req.timeout.sec = 3
 
-        req = GetPositionIK.Request()
-        req.ik_request = ik_req
+                req = GetPositionIK.Request()
+                req.ik_request = ik_req
 
-        fut = self.ik_client.call_async(req)
-        rclpy.spin_until_future_complete(self, fut)
-        if not fut.done() or fut.result() is None:
-            self.get_logger().error('IK call failed')
-            return None
-        resp = fut.result()
-        if resp.error_code.val != 1:
-            self.get_logger().warn(f'IK solver failed with code: {resp.error_code.val}')
+                fut = self.ik_client.call_async(req)
+                rclpy.spin_until_future_complete(self, fut)
+                if not fut.done() or fut.result() is None:
+                    self.get_logger().warn('IK call failed (no response)')
+                    continue
+                resp = fut.result()
+                # Log the full response (error code + any message) for debugging
+                try:
+                    self.get_logger().info(f'IK response error_code={resp.error_code.val}')
+                except Exception:
+                    pass
+
+                if resp.error_code.val == 1:
+                    ik_resp = resp
+                    break
+                else:
+                    last_err = resp.error_code.val
+            if ik_resp:
+                break
+
+        if ik_resp is None:
+            self.get_logger().warn(f'IK solver failed after orientation sweep, last_error={last_err}')
             return None
 
         # Extract joint positions for the arm joints
-        js = resp.solution.joint_state
+        js = ik_resp.solution.joint_state
         name_to_pos = dict(zip(js.name, js.position))
         joint_names = ['Joint_1', 'Joint_2', 'Joint_3', 'Joint_4', 'Joint_5']
         positions = []
