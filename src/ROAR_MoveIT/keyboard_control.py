@@ -9,7 +9,7 @@ from moveit_msgs.msg import Constraints, PositionConstraint, BoundingVolume
 from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
 from moveit_msgs.srv import GetPositionIK
-from moveit_msgs.msg import PositionIKRequest
+from moveit_msgs.msg import PositionIKRequest, RobotState
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
@@ -99,7 +99,28 @@ class XYZMover(Node):
                 ik_req.pose_stamped.pose.orientation.y = q_y
                 ik_req.pose_stamped.pose.orientation.z = q_z
                 ik_req.pose_stamped.pose.orientation.w = q_w
-                ik_req.timeout.sec = 3
+                ik_req.timeout.sec = 4
+                # seed IK with current joint states to help solver
+                try:
+                    # subscribe once to /joint_states to get current positions
+                    current_js = None
+                    def _cb(msg):
+                        nonlocal current_js
+                        current_js = msg
+                    sub = self.create_subscription(JointState, '/joint_states', _cb, 10)
+                    start = self.get_clock().now()
+                    while rclpy.ok() and current_js is None and (self.get_clock().now() - start).nanoseconds < 2e9:
+                        rclpy.spin_once(self, timeout_sec=0.01)
+                    try:
+                        self.destroy_subscription(sub)
+                    except Exception:
+                        pass
+                    if current_js is not None:
+                        rs = RobotState()
+                        rs.joint_state = current_js
+                        ik_req.robot_state = rs
+                except Exception:
+                    pass
 
                 req = GetPositionIK.Request()
                 req.ik_request = ik_req
@@ -162,7 +183,27 @@ class XYZMover(Node):
                                 ik_req.pose_stamped.pose.orientation.y = q_y
                                 ik_req.pose_stamped.pose.orientation.z = q_z
                                 ik_req.pose_stamped.pose.orientation.w = q_w
-                                ik_req.timeout.sec = 3
+                                ik_req.timeout.sec = 4
+                                # seed IK with current joint states similarly
+                                try:
+                                    current_js = None
+                                    def _cb2(msg):
+                                        nonlocal current_js
+                                        current_js = msg
+                                    sub2 = self.create_subscription(JointState, '/joint_states', _cb2, 10)
+                                    start2 = self.get_clock().now()
+                                    while rclpy.ok() and current_js is None and (self.get_clock().now() - start2).nanoseconds < 2e9:
+                                        rclpy.spin_once(self, timeout_sec=0.01)
+                                    try:
+                                        self.destroy_subscription(sub2)
+                                    except Exception:
+                                        pass
+                                    if current_js is not None:
+                                        rs2 = RobotState()
+                                        rs2.joint_state = current_js
+                                        ik_req.robot_state = rs2
+                                except Exception:
+                                    pass
 
                                 req = GetPositionIK.Request()
                                 req.ik_request = ik_req
